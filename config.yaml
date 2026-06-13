@@ -5,7 +5,7 @@ data:
 model:
   R: 10                    # number of graph realizations
   seed_size: 10            # k - number of seed nodes
-  mc_simulations: 100      # monte carlo runs per influence estimate
+  mc_simulations: 50      # monte carlo runs per influence estimate
 
 node_attributes:
   # defaults when no empirical values are available

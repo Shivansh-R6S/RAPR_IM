@@ -29,11 +29,9 @@ def _single_diffusion(G: nx.DiGraph, seed_set: set) -> dict:
     Single run of PaIC-DGBC.
 
     Key invariants:
-    - A node can only be activated if new prob > current activation_level
+    - A node activates only if new prob > current activation_level
     - Each active node gets exactly one chance to influence its neighbors
     - Immune transition fires when same-polarity exposure > half of in-degree
-    - Nodes that fail to activate anyone do NOT auto-immune mid-cascade;
-      Immune is set only via the reinforcement rule
     """
     state = {node: "Neutral" for node in G.nodes()}
     info_type = {node: None for node in G.nodes()}
@@ -41,15 +39,13 @@ def _single_diffusion(G: nx.DiGraph, seed_set: set) -> dict:
     same_polarity_count = {node: 0 for node in G.nodes()}
     in_degree = dict(G.in_degree())
 
-    # seeding phase
     for node in seed_set:
         state[node] = "Aligned"
         info_type[node] = "Pro"
         activation_level[node] = 1.0
 
-    # queue holds nodes that are active and haven't yet tried to influence neighbors
     queue = deque(seed_set)
-    queued = set(seed_set)  # prevents re-queuing
+    queued = set(seed_set)
 
     while queue:
         u = queue.popleft()
@@ -58,8 +54,6 @@ def _single_diffusion(G: nx.DiGraph, seed_set: set) -> dict:
 
         if u_state not in ("Aligned", "Opposed"):
             continue
-
-        newly_activated = False
 
         for _, v, edge_data in G.out_edges(u, data=True):
             if state[v] == "Immune":
@@ -93,36 +87,30 @@ def _single_diffusion(G: nx.DiGraph, seed_set: set) -> dict:
                         queued.add(v)
 
                 elif prev_state == new_state:
-                    # reinforcement - same polarity, increase resistance
                     same_polarity_count[v] += 1
                     activation_level[v] = prob
                     _check_immune(v, state, same_polarity_count, in_degree)
 
                 else:
-                    # state flip due to backfire / distrust gateway
+                    # state flip - backfire or distrust gateway
                     state[v] = new_state
                     info_type[v] = new_info
                     activation_level[v] = prob
-                    same_polarity_count[v] = 0  # reset - polarity flipped
+                    same_polarity_count[v] = 0
                     if state[v] != "Immune" and v not in queued:
                         queue.append(v)
                         queued.add(v)
 
     final_states = list(state.values())
-    aligned_count = sum(1 for s in final_states if s == "Aligned")
-    opposed_count = sum(1 for s in final_states if s == "Opposed")
-    immune_count = sum(1 for s in final_states if s == "Immune")
-
     return {
-        "aligned": aligned_count,
-        "opposed": opposed_count,
-        "immune": immune_count,
+        "aligned": sum(1 for s in final_states if s == "Aligned"),
+        "opposed": sum(1 for s in final_states if s == "Opposed"),
+        "immune": sum(1 for s in final_states if s == "Immune"),
         "state_map": state,
     }
 
 
 def _check_immune(node, state, same_polarity_count, in_degree):
-    """Immune transition: more than half incoming neighbors pushed same polarity."""
     if in_degree[node] > 0 and same_polarity_count[node] > in_degree[node] / 2:
         state[node] = "Immune"
 
@@ -133,9 +121,9 @@ def _resolve_influence(u_info: str, edge_sign: int,
     """
     Backfire cascade resolution:
       Pro  + positive edge -> Pro,  prob = conformity * weight
-      Pro  + negative edge -> Anti, prob = reactance * weight
+      Pro  + negative edge -> Anti, prob = reactance * weight   (distrust gateway)
       Anti + positive edge -> Anti, prob = conformity * weight
-      Anti + negative edge -> Pro,  prob = reactance * weight
+      Anti + negative edge -> Pro,  prob = reactance * weight   (backfire cascade)
     """
     if u_info == "Pro":
         if edge_sign == 1:
