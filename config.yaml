@@ -1,0 +1,21 @@
+data:
+  path: "data/soc-sign-Slashdot081106.txt"
+  delimiter: "\t"          # columns are tab-separated
+
+model:
+  R: 10                    # number of graph realizations
+  seed_size: 10            # k - number of seed nodes
+  mc_simulations: 100      # monte carlo runs per influence estimate
+
+node_attributes:
+  # defaults when no empirical values are available
+  # trusting cluster
+  conformity_high: 0.9
+  conformity_medium: 0.5
+  conformity_low: 0.3
+  reactance_high: 0.9
+  reactance_medium: 0.4
+  reactance_low: 0.1
+
+logging:
+  level: "INFO"

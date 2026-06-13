@@ -1,0 +1,13 @@
+venv/
+env/
+.env
+rapr_env/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+data/
+results/
+.vscode/
+file_description.md
