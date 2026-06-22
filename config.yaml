@@ -4,18 +4,8 @@ data:
 
 model:
   R: 10                    # number of graph realizations
-  seed_size: 10            # k - number of seed nodes
-  mc_simulations: 50      # monte carlo runs per influence estimate
-
-node_attributes:
-  # defaults when no empirical values are available
-  # trusting cluster
-  conformity_high: 0.9
-  conformity_medium: 0.5
-  conformity_low: 0.3
-  reactance_high: 0.9
-  reactance_medium: 0.4
-  reactance_low: 0.1
+  seed_sizes: [5, 10, 15, 20, 25]   # k values to evaluate
+  mc_simulations: 10       # monte carlo runs per influence estimate (greedy step)
 
 logging:
   level: "INFO"
