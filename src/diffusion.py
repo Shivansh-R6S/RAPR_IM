@@ -101,11 +101,28 @@ def _single_diffusion(G: nx.DiGraph, seed_set: set) -> dict:
                         queue.append(v)
                         queued.add(v)
 
-    final_states = list(state.values())
+    # Counts of interest (aligned/opposed/immune) are captured based on each
+    # node's polarity *before* the termination sweep below. This is what the
+    # paper's sigma+ (aligned/Pro count) refers to in the Modified Greedy
+    # objective, and matches the polarities shown in the paper's worked
+    # example (Fig. 2) at the final timestep.
+    aligned_count = sum(1 for s in state.values() if s == "Aligned")
+    opposed_count = sum(1 for s in state.values() if s == "Opposed")
+    immune_count = sum(1 for s in state.values() if s == "Immune")
+
+    # Termination phase: once no new nodes are activated (queue empty),
+    # all remaining active nodes (Aligned/Opposed) become Immune, per the
+    # paper's Reinforcement & Immune Phase spec. This updates state_map
+    # (the per-node state), but does not change the aligned/opposed/immune
+    # counts returned above, which reflect final polarity, not final state.
+    for node, s in state.items():
+        if s in ("Aligned", "Opposed"):
+            state[node] = "Immune"
+
     return {
-        "aligned": sum(1 for s in final_states if s == "Aligned"),
-        "opposed": sum(1 for s in final_states if s == "Opposed"),
-        "immune": sum(1 for s in final_states if s == "Immune"),
+        "aligned": aligned_count,
+        "opposed": opposed_count,
+        "immune": immune_count,
         "state_map": state,
     }
 

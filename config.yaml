@@ -3,9 +3,9 @@ data:
   delimiter: "\t"          # columns are tab-separated
 
 model:
-  R: 10                    # number of graph realizations
+  R: 5                     # number of graph realizations
   seed_sizes: [5, 10, 15, 20, 25]   # k values to evaluate
-  mc_simulations: 10       # monte carlo runs per influence estimate (greedy step)
+  mc_simulations: 5        # monte carlo runs per influence estimate (greedy step)
 
 logging:
   level: "INFO"

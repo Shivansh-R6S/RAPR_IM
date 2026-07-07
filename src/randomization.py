@@ -6,54 +6,80 @@ import networkx as nx
 
 logger = logging.getLogger(__name__)
 
-# hard cap on cycle search depth - independent of graph size
-MAX_CYCLE_DEPTH = 8
+MAX_CYCLE_DEPTH = 10
+MAX_START_ATTEMPTS = 100
+ROUNDS_PER_REALIZATION = 5
 
-# if no cycle is found after checking this many start nodes, give up and dump remainder
-MAX_START_ATTEMPTS = 50
+# standard deviation for per-realization node attribute perturbation
+# small enough to keep attributes recognizable, large enough to affect diffusion
+NODE_ATTR_PERTURB_STD = 0.05
 
 
 def generate_realizations(G: nx.DiGraph, R: int) -> list:
     """
-    Generates R randomized signed graphs preserving each node's TOTAL signed
-    degree (in-edges + out-edges combined, by sign).
+    Generates R randomized signed graphs. Each realization differs via:
+    1. Multi-round single-use sign randomization (ROUNDS_PER_REALIZATION passes)
+    2. Per-realization node attribute perturbation on conformity and reactance
+    Both preserve total signed degree (in+out) per node.
     """
     realizations = []
     for i in range(R):
-        G_prime = signed_randomization(G)
+        G_prime = signed_randomization(G, realization_seed=i)
         realizations.append(G_prime)
-        logger.info(f"Realization {i+1}/{R} generated.")
+        logger.info(f"Realization {i+1}/{R} complete.")
     return realizations
 
 
-def signed_randomization(G: nx.DiGraph) -> nx.DiGraph:
+def signed_randomization(G: nx.DiGraph, realization_seed: int = 0) -> nx.DiGraph:
     """
-    Algorithm 1: Signed Randomization (flip-based, with single-use node constraint).
+    Runs ROUNDS_PER_REALIZATION sequential single-use sign randomization rounds,
+    then applies per-realization node attribute perturbation.
 
-    For an alternating-sign cycle u -> a -> b -> ... -> u, every edge in the
-    cycle has its sign flipped (+1 <-> -1). This preserves each node's TOTAL
-    signed degree (in+out combined) since each node in the cycle contributes
-    one in-edge and one out-edge with opposite signs - flipping both swaps
-    which edge carries which sign without changing the node's overall count.
+    realization_seed is used to make node perturbation deterministic and unique
+    per realization while keeping the sign randomization stochastic.
+    """
+    G_current = copy.deepcopy(G)
 
-    Once a node has been part of any swapped cycle, it's marked used and
-    excluded from all future cycle searches in this realization. This
-    guarantees each node is touched at most once per realization (avoiding
-    any accumulated imbalance across multiple swaps on the same node), and
-    shrinks the search space faster since every swap removes all edges of
-    every node in the cycle, not just the cycle's own edges.
+    for round_num in range(1, ROUNDS_PER_REALIZATION + 1):
+        logger.info(f"  round {round_num}/{ROUNDS_PER_REALIZATION}: "
+                    f"{G_current.number_of_edges()} edges")
+        G_current = _single_round(G_current, round_num)
+
+    _perturb_node_attributes(G_current, realization_seed)
+    return G_current
+
+
+def _perturb_node_attributes(G: nx.DiGraph, realization_seed: int):
+    """
+    Adds small Gaussian noise (std=NODE_ATTR_PERTURB_STD) to each node's
+    conformity and reactance, clamped to [0, 1].
+
+    Uses a seeded RNG so perturbations are reproducible per realization index
+    but differ across realizations. This models behavioral uncertainty — the
+    paper provides no method for estimating these from real data, so treating
+    them as uncertain across realizations is methodologically consistent.
+    """
+    rng = random.Random(realization_seed * 1000 + 7)  # unique seed per realization
+
+    for node in G.nodes():
+        k = G.nodes[node].get("conformity", 0.5)
+        r = G.nodes[node].get("reactance", 0.5)
+
+        G.nodes[node]["conformity"] = max(0.0, min(1.0, k + rng.gauss(0, NODE_ATTR_PERTURB_STD)))
+        G.nodes[node]["reactance"] = max(0.0, min(1.0, r + rng.gauss(0, NODE_ATTR_PERTURB_STD)))
+
+
+def _single_round(G: nx.DiGraph, round_num: int) -> nx.DiGraph:
+    """
+    One single-use randomization pass over G.
+    Returns G' with some edges sign-flipped, all topology and total degree preserved.
     """
     G_working = copy.deepcopy(G)
     G_prime = nx.DiGraph()
     G_prime.add_nodes_from(G.nodes(data=True))
     used_nodes = set()
 
-    initial_edges = G_working.number_of_edges()
-    logger.info(f"  initial edges: {initial_edges}")
-
     G_working, G_prime, used_nodes = _find_desired_state(G_working, G_prime, used_nodes)
-    logger.info(f"  after desired-state pass: {G_working.number_of_edges()} edges remain "
-                f"({G_prime.number_of_edges()} transferred)")
 
     iteration = 0
     while G_working.number_of_edges() > 0:
@@ -61,36 +87,24 @@ def signed_randomization(G: nx.DiGraph) -> nx.DiGraph:
         path = _find_alternating_cycle(G_working, used_nodes)
 
         if path is None:
-            logger.info(f"  no alternating cycle found at iteration {iteration}, "
-                        f"{G_working.number_of_edges()} edges left, dumping as-is")
             break
 
         cycle_nodes = {u for u, v in path} | {v for u, v in path}
         _flip_and_transfer(G_working, G_prime, path)
         used_nodes.update(cycle_nodes)
-
-        # nodes in the cycle are now used - remove all their remaining edges
-        # (not just the cycle's own edges) since they can't participate again
         G_working, G_prime, used_nodes = _retire_nodes(G_working, G_prime, cycle_nodes, used_nodes)
-
-        if iteration % 500 == 0:
-            logger.info(f"  iteration {iteration}: {G_working.number_of_edges()} edges remaining, "
-                        f"{G_prime.number_of_edges()} transferred, {len(used_nodes)} nodes used")
 
     for u, v, data in G_working.edges(data=True):
         G_prime.add_edge(u, v, **data)
 
-    logger.info(f"  done: {G_prime.number_of_edges()} total edges in realization, "
-                f"{len(used_nodes)} unique nodes randomized")
+    logger.info(f"    {iteration} cycles found, {len(used_nodes)} nodes touched")
     return G_prime
 
 
 def _retire_nodes(G_working: nx.DiGraph, G_prime: nx.DiGraph, cycle_nodes: set, used_nodes: set):
     """
-    Removes all remaining edges of nodes that just got used in a swap, dumping
-    them unchanged into G_prime. These nodes can't participate in any future
-    cycle, so any edges of theirs not already part of the swapped cycle are
-    left as-is rather than left dangling in G_working.
+    Dumps all remaining edges of used nodes into G_prime unchanged and removes
+    them from G_working. Neighbor nodes keep their other edges in G_working.
     """
     for node in cycle_nodes:
         if not G_working.has_node(node):
@@ -107,12 +121,8 @@ def _retire_nodes(G_working: nx.DiGraph, G_prime: nx.DiGraph, cycle_nodes: set, 
 
 def _find_desired_state(G_working: nx.DiGraph, G_prime: nx.DiGraph, used_nodes: set):
     """
-    Initial pass only. Removes to G':
-    - Leaf nodes (undirected degree <= 1) - no randomization possible with one edge
-    - Nodes whose TOTAL signed edges (in+out) are uniformly positive or negative
-
-    These nodes are also added to used_nodes since they can never participate
-    in a valid cycle anyway.
+    Initial pass: removes leaf nodes and uniform-sign nodes to G_prime.
+    These can never participate in a valid alternating cycle.
     """
     check_set = deque(G_working.nodes())
 
@@ -155,8 +165,8 @@ def _find_desired_state(G_working: nx.DiGraph, G_prime: nx.DiGraph, used_nodes: 
 
 def _find_alternating_cycle(G_working: nx.DiGraph, used_nodes: set):
     """
-    Finds a short cycle where adjacent edges alternate in sign, restricted to
-    nodes not yet used in this realization.
+    Finds a short alternating-sign cycle restricted to unused nodes.
+    Tries up to MAX_START_ATTEMPTS random start nodes.
     """
     nodes = [n for n in G_working.nodes() if n not in used_nodes]
     if not nodes:
@@ -175,11 +185,13 @@ def _find_alternating_cycle(G_working: nx.DiGraph, used_nodes: set):
 
 def _bfs_alternating_cycle(G: nx.DiGraph, start, used_nodes: set):
     """
-    BFS from `start` for a cycle back to `start` with alternating edge signs.
-    Never traverses through a node already in used_nodes - guarantees every
-    node in any returned cycle is fresh (not previously swapped).
+    BFS from `start` finding a cycle back to `start` with alternating edge signs.
+    Never traverses through used nodes. Tracks (node, last_sign) to stay
+    polynomial on high-degree hubs. Validates wraparound sign to ensure
+    start node's total degree is preserved by the flip.
     """
-    out_edges = [(s, t, d) for s, t, d in G.out_edges(start, data=True) if t not in used_nodes]
+    out_edges = [(s, t, d) for s, t, d in G.out_edges(start, data=True)
+                 if t not in used_nodes or t == start]
     if not out_edges:
         return None
 
@@ -197,8 +209,7 @@ def _bfs_alternating_cycle(G: nx.DiGraph, start, used_nodes: set):
         if current == start:
             if last_sign != first_sign:
                 return edge_path
-            else:
-                continue
+            continue
 
         if len(edge_path) >= MAX_CYCLE_DEPTH:
             continue
@@ -215,8 +226,7 @@ def _bfs_alternating_cycle(G: nx.DiGraph, start, used_nodes: set):
             if neighbor == start:
                 if next_sign != first_sign:
                     return edge_path + [(current, neighbor)]
-                else:
-                    continue
+                continue
 
             key = (neighbor, next_sign)
             if key not in visited:
@@ -227,10 +237,7 @@ def _bfs_alternating_cycle(G: nx.DiGraph, start, used_nodes: set):
 
 
 def _flip_and_transfer(G_working: nx.DiGraph, G_prime: nx.DiGraph, path: list):
-    """
-    Flips sign on every edge in path (+1 <-> -1), transfers to G_prime,
-    removes from G_working.
-    """
+    """Flips sign on every edge in path, transfers to G_prime, removes from G_working."""
     for u, v in path:
         if not G_working.has_edge(u, v):
             continue
@@ -243,16 +250,15 @@ def _flip_and_transfer(G_working: nx.DiGraph, G_prime: nx.DiGraph, path: list):
 
 def verify_total_degree_preserved(G_original: nx.DiGraph, G_prime: nx.DiGraph) -> bool:
     """
-    Verifies each node's TOTAL signed degree (in+out combined, by sign) is
-    preserved between G and G'.
+    Verifies each node's TOTAL signed degree (in+out combined) is preserved.
+    Note: node attributes (conformity, reactance) are intentionally perturbed
+    and are NOT checked here - only edge sign structure is verified.
     """
     def total_signed_degree(G, node):
         out_s = [d['sign'] for _, _, d in G.out_edges(node, data=True)]
         in_s = [d['sign'] for _, _, d in G.in_edges(node, data=True)]
         all_s = out_s + in_s
-        pos = sum(1 for s in all_s if s == 1)
-        neg = sum(1 for s in all_s if s == -1)
-        return pos, neg
+        return sum(1 for s in all_s if s == 1), sum(1 for s in all_s if s == -1)
 
     for node in G_original.nodes():
         orig = total_signed_degree(G_original, node)
