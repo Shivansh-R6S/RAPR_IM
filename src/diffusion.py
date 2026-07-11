@@ -29,9 +29,12 @@ def _single_diffusion(G: nx.DiGraph, seed_set: set) -> dict:
     Single run of PaIC-DGBC.
 
     Key invariants:
-    - A node activates only if new prob > current activation_level
+    - Neutral nodes activate only if new prob > current activation_level
     - Each active node gets exactly one chance to influence its neighbors
     - Immune transition fires when same-polarity exposure > half of in-degree
+    - Counts are captured BEFORE the termination sweep so aligned/opposed
+      reflect final polarity (what sigma+ in Algorithm 2 measures), not
+      final state (which collapses everything to Immune at termination)
     """
     state = {node: "Neutral" for node in G.nodes()}
     info_type = {node: None for node in G.nodes()}
@@ -40,12 +43,13 @@ def _single_diffusion(G: nx.DiGraph, seed_set: set) -> dict:
     in_degree = dict(G.in_degree())
 
     for node in seed_set:
-        state[node] = "Aligned"
-        info_type[node] = "Pro"
-        activation_level[node] = 1.0
+        if node in G:
+            state[node] = "Aligned"
+            info_type[node] = "Pro"
+            activation_level[node] = 1.0
 
-    queue = deque(seed_set)
-    queued = set(seed_set)
+    queue = deque(n for n in seed_set if n in G)
+    queued = set(n for n in seed_set if n in G)
 
     while queue:
         u = queue.popleft()
@@ -87,12 +91,13 @@ def _single_diffusion(G: nx.DiGraph, seed_set: set) -> dict:
                         queued.add(v)
 
                 elif prev_state == new_state:
+                    # reinforcement - same polarity, increase resistance
                     same_polarity_count[v] += 1
                     activation_level[v] = prob
                     _check_immune(v, state, same_polarity_count, in_degree)
 
                 else:
-                    # state flip - backfire or distrust gateway
+                    # state flip via backfire cascade or distrust gateway
                     state[v] = new_state
                     info_type[v] = new_info
                     activation_level[v] = prob
@@ -101,20 +106,13 @@ def _single_diffusion(G: nx.DiGraph, seed_set: set) -> dict:
                         queue.append(v)
                         queued.add(v)
 
-    # Counts of interest (aligned/opposed/immune) are captured based on each
-    # node's polarity *before* the termination sweep below. This is what the
-    # paper's sigma+ (aligned/Pro count) refers to in the Modified Greedy
-    # objective, and matches the polarities shown in the paper's worked
-    # example (Fig. 2) at the final timestep.
+    # capture counts before termination sweep - aligned/opposed reflect
+    # final polarity which is what sigma+ (Algorithm 2 objective) measures
     aligned_count = sum(1 for s in state.values() if s == "Aligned")
     opposed_count = sum(1 for s in state.values() if s == "Opposed")
     immune_count = sum(1 for s in state.values() if s == "Immune")
 
-    # Termination phase: once no new nodes are activated (queue empty),
-    # all remaining active nodes (Aligned/Opposed) become Immune, per the
-    # paper's Reinforcement & Immune Phase spec. This updates state_map
-    # (the per-node state), but does not change the aligned/opposed/immune
-    # counts returned above, which reflect final polarity, not final state.
+    # termination sweep: remaining Aligned/Opposed -> Immune (updates state_map only)
     for node, s in state.items():
         if s in ("Aligned", "Opposed"):
             state[node] = "Immune"

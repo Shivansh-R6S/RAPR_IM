@@ -1,11 +1,10 @@
 data:
-  path: "data/soc-sign-Slashdot081106.txt"
-  delimiter: "\t"          # columns are tab-separated
+  path: "data/soc-sign-Slashdot090216.txt"
+  delimiter: "\t"
 
 model:
-  R: 5                     # number of graph realizations
-  seed_sizes: [5, 10, 15, 20, 25]   # k values to evaluate
-  mc_simulations: 5        # monte carlo runs per influence estimate (greedy step)
-
-logging:
-  level: "INFO"
+  R: 5
+  seed_sizes: [5, 10, 15, 20, 25]
+  mc_simulations: 10          # used for final evaluation
+  mc_simulations_greedy: 5    # used during greedy selection (lower for speed)
+  n_candidates: 1000          # top-N by out-degree as greedy candidate pool
