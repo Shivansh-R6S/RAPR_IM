@@ -1,5 +1,5 @@
 data:
-  path: "data/soc-sign-Slashdot090216.txt"
+  path: "data/soc-sign-epinions.txt"
   delimiter: "\t"
 
 model:
